@@ -1,4 +1,4 @@
-obj-m += scdev.o
+obj-m += bchd.o
 
 PWD := $(CURDIR)
 
