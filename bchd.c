@@ -12,35 +12,42 @@
  * If there is no data stored, the character ' ' is written.
  */
 
-#include <linux/module.h>   /* Necessary for all modules */
-#include <linux/init.h>     /* For module_init and module_exit */
+#include <linux/module.h>       /* Necessary for all modules */
+#include <linux/init.h>         /* For module_init and module_exit */
 
-#include <linux/kernel.h>   /* container_of */
-#include <linux/types.h>    /* For dev_t */
-#include <linux/kdev_t.h>   /* For MAJOR,MINOR,MKDEV */
-#include <linux/fs.h>       /* For alloc_chrdev_region etc */
+#include <linux/kernel.h>       /* container_of */
+#include <linux/types.h>        /* For dev_t */
+#include <linux/kdev_t.h>       /* For MAJOR,MINOR,MKDEV */
+#include <linux/fs.h>           /* For alloc_chrdev_region etc */
 #include <linux/errno.h>
 #include <linux/cdev.h>
-#include <linux/fcntl.h>    /* O_ACCMODE */
-#include <linux/slab.h>     /* kmalloc, kfree */
-#include <linux/uaccess.h>  /* copy_from_user, copy_to_user */
+#include <linux/fcntl.h>        /* O_ACCMODE */
+#include <linux/slab.h>         /* kmalloc, kfree */
+#include <linux/uaccess.h>      /* copy_from_user, copy_to_user */
+#include <linux/workqueue.h> 
+#include <linux/jiffies.h>      /* HZ */
 
 MODULE_AUTHOR("Christopher Denker");
 MODULE_DESCRIPTION("Basic character device");
 MODULE_LICENSE("GPL");
 
 #ifndef BCHD_QUANTUM
-#define BCHD_QUANTUM    4000
+#define BCHD_QUANTUM 4000
 #endif
 
 #ifndef BCHD_QSET
-#define BCHD_QSET       1000
+#define BCHD_QSET 1000
+#endif
+
+#ifndef BCHD_MAX_WORD_LEN
+#define BCHD_MAX_WORD_LEN 20
 #endif
 
 int bchd_major = 0;    /* we use a dynamic major by default */
 int bchd_minor = 0;
 int bchd_quantum_size = BCHD_QUANTUM;
 int bchd_qset_size = BCHD_QSET;
+int bchd_max_word_len = BCHD_MAX_WORD_LEN;
 
 /*
  * The data of a bchd device is represented using a linked list.
@@ -58,6 +65,12 @@ struct bchd_dev {
     int quantum_size;           /* Amount of bytes per quantum */
     int qset_size;              /* Amount of pointers in a quantum set */
     unsigned long size;         /* Amount of data (in bytes) stored here */
+ 
+    int max_word_len;           /* Max word length we write into the kernel log */
+    struct workqueue_struct *wq_logger;
+    struct delayed_work ws_logger;
+    int log_pos;                /* Index used for logging data into the kernel log */
+
     struct mutex lock;          /* Mutual exclusion semaphore */
     struct cdev cdev;           /* Char device structure */
 };
@@ -96,6 +109,7 @@ void bchd_trim(struct bchd_dev *dev)
     dev->size = 0;
     dev->quantum_size = bchd_quantum_size;
     dev->qset_size = bchd_qset_size;
+    dev->log_pos = 0;
     dev->data = NULL;
 }
 
@@ -304,6 +318,11 @@ static void bchd_cleanup(void)
 {
     dev_t dev = MKDEV(bchd_major, bchd_minor);
 
+    if (bchd_dev->wq_logger != NULL) {
+        cancel_delayed_work_sync(&bchd_dev->ws_logger);
+        destroy_workqueue(bchd_dev->wq_logger);
+    }
+
     /* get rid of char dev entry */
     if (bchd_dev != NULL) {
         bchd_trim(bchd_dev);
@@ -314,13 +333,113 @@ static void bchd_cleanup(void)
     /* bchd_cleanup is never called if registering failed */
     unregister_chrdev_region(dev, 1);
 
-    printk(KERN_INFO "bchd: exit\n");
+    printk(KERN_INFO "bchd: MODULE EXIT\n");
+}
+
+/*
+ * Read the next word starting from dev->log_pos from the device
+ * and write it into the kernel log.
+ * A word is a sequence of characters followed by ' ' or '\n'.
+ * Only up to BCHD_MAX_WORD_LEN characters are examined.
+ */
+static void bchd_log_word(struct work_struct *ws)
+{
+    struct bchd_dev *dev = container_of(ws, struct bchd_dev, ws_logger.work);
+
+    struct bchd_qset *dptr; /* first list item */
+    int quantum_size = dev->quantum_size;
+    int qset_size = dev->qset_size;
+    int *log_pos = &dev->log_pos;
+    int max_cnt = dev->max_word_len;
+    int item_size = quantum_size * qset_size; /* how many bytes in the list item */
+    int item, qset_pos, q_pos, rest;
+    char word[BCHD_MAX_WORD_LEN];
+    int w = 0;  /* index to the word string */
+    int i;      /* index used for counting how many characters we already logged */
+    unsigned long delay;
+    
+    if (mutex_lock_interruptible(&dev->lock)) {
+        goto out;
+    }
+    if (dev->size == 0) {
+        printk(KERN_INFO "bchd: no text stored in /dev/bchd\n");
+        /* Reschedule work in the work queue */
+        delay = HZ; /* One second */
+        queue_delayed_work(dev->wq_logger, &dev->ws_logger, delay);
+        goto out;
+    }
+    /*  
+     * If we already logged all stored words, we start again.
+     * We have +1 here since we read <= max_cnt - 1 characters due to storing '\0' in the 
+     * string that we write into the kernel log later.
+     */  
+    if (*log_pos + 1 >= dev->size) {
+        *log_pos = 0;
+    }
+    if (*log_pos + max_cnt > dev->size) {
+        max_cnt = dev->size - *log_pos;
+    }
+
+    /* find list item, qset index and offset in the quantum */
+    item = (long) *log_pos / item_size;
+    rest = (long) *log_pos % item_size;
+    qset_pos = rest / quantum_size;
+    q_pos = rest % quantum_size;
+
+    /* follow the list up to the right position */
+    dptr = bchd_follow(dev, item);
+    if (dptr == NULL || dptr->data == NULL || dptr->data[qset_pos] == NULL) {
+        goto out;
+    }
+
+    /* Read only up to the end of this quantum */
+    if (max_cnt > quantum_size - q_pos) {
+        max_cnt = quantum_size - q_pos;
+    }
+
+    /* 
+     * Read a word (i.e. until we encounter ' ' or '\n')
+     * or until we have advanced max_cnt - 1 (keep '\0' in mind) positions.
+     */
+    for (i = 0; i < max_cnt - 1; i++) {
+        int c = *((char *) dptr->data[qset_pos] + q_pos + i);
+        if (c == ' ' || c == '\n') { /* end of word */
+            word[w] = ' ';
+            w++;
+            (*log_pos)++;
+            break;
+        }
+        /*
+         * These are the ASCII values we accept as word characters.
+         * ' ' is the integer 32 and '~' is the integer 126,
+         * that is, we accept all ASCII values in between these two.
+         * We ignore everything else.
+         *
+         * NOTE: This might not work on non-ASCII systems!
+         */
+        if (c >= ' ' || c <= '~') {
+            word[w] = c;
+            w++;
+            (*log_pos)++;
+        }
+    }
+    word[w] = '\0';
+
+    /* Write the word string into the kernel log */
+    printk(KERN_INFO "bchd: %s\n", word);
+
+    /* Reschedule work in the work queue */
+    delay = HZ; /* One second */
+    queue_delayed_work(dev->wq_logger, &dev->ws_logger, delay);
+out:
+    mutex_unlock(&dev->lock);
 }
 
 static int __init bchd_init(void)
 {
     int result;
     dev_t dev = 0;
+    unsigned long delay;
 
     /* Obtain device number */    
     result = alloc_chrdev_region(&dev, bchd_minor, 1, "bchd");
@@ -341,10 +460,23 @@ static int __init bchd_init(void)
     /* Initialize the device */
     bchd_dev->quantum_size = bchd_quantum_size;
     bchd_dev->qset_size = bchd_qset_size;
+    bchd_dev->max_word_len = bchd_max_word_len;
+    bchd_dev->wq_logger = create_singlethread_workqueue("wq_logger");
+    if (bchd_dev->wq_logger == NULL) {
+        printk(KERN_WARNING "bchd: failed to create wq_logger\n");
+        result = -ENOMEM;
+        goto fail;
+    }
+    INIT_DELAYED_WORK(&bchd_dev->ws_logger, bchd_log_word); 
+    bchd_dev->log_pos = 0;
     mutex_init(&bchd_dev->lock);
     bchd_setup_cdev(bchd_dev);
 
-    printk(KERN_INFO "bchd: initialized -- device major: %d; device minor: %d\n", MAJOR(dev), MINOR(dev));
+    /* Each second a word from the stored text data is written into the kernel log */
+    delay = HZ; /* One second ... HZ denotes the jiffies per second*/
+    queue_delayed_work(bchd_dev->wq_logger, &bchd_dev->ws_logger, delay);
+
+    printk(KERN_INFO "bchd: MODULE INIT -- device major: %d; device minor: %d\n", MAJOR(dev), MINOR(dev));
     return 0;   /* success */
 
 fail:
