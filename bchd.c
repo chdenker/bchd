@@ -9,10 +9,10 @@
  * the text data is transferred back to the user.
  * Furthermore, this module periodically (1 word per sec) writes the stored text data
  * into the kernel log.
- * If there is no data stored, the character ' ' is written.
  */
 
 #include <linux/module.h>       /* Necessary for all modules */
+#include <linux/moduleparam.h>
 #include <linux/init.h>         /* For module_init and module_exit */
 
 #include <linux/kernel.h>       /* container_of */
@@ -31,23 +31,33 @@ MODULE_AUTHOR("Christopher Denker");
 MODULE_DESCRIPTION("Basic character device");
 MODULE_LICENSE("GPL");
 
+#ifndef BCHD_MAJOR
+#define BCHD_MAJOR 0            /* default: 0 -- that is, dynamic major */
+#endif
+
 #ifndef BCHD_QUANTUM
-#define BCHD_QUANTUM 4000
+#define BCHD_QUANTUM 4000       /* default: 4000 */
 #endif
 
 #ifndef BCHD_QSET
-#define BCHD_QSET 1000
+#define BCHD_QSET 1000          /* default: 1000 */
 #endif
 
 #ifndef BCHD_MAX_WORD_LEN
-#define BCHD_MAX_WORD_LEN 20
+#define BCHD_MAX_WORD_LEN 20    /* default: 20 */
 #endif
 
-int bchd_major = 0;    /* we use a dynamic major by default */
+int bchd_major = BCHD_MAJOR;
 int bchd_minor = 0;
 int bchd_quantum_size = BCHD_QUANTUM;
 int bchd_qset_size = BCHD_QSET;
 int bchd_max_word_len = BCHD_MAX_WORD_LEN;
+
+module_param(bchd_major, int, S_IRUGO);
+module_param(bchd_minor, int, S_IRUGO);
+module_param(bchd_quantum_size, int, S_IRUGO);
+module_param(bchd_qset_size, int, S_IRUGO);
+module_param(bchd_max_word_len, int, S_IRUGO);
 
 /*
  * The data of a bchd device is represented using a linked list.
@@ -412,7 +422,7 @@ static void bchd_log_word(struct work_struct *ws)
         /*
          * These are the ASCII values we accept as word characters.
          * ' ' is the integer 32 and '~' is the integer 126,
-         * that is, we accept all ASCII values in between these two.
+         * that is, we accept all ASCII values in between (and including) these two.
          * We ignore everything else.
          *
          * NOTE: This might not work on non-ASCII systems!
@@ -424,6 +434,10 @@ static void bchd_log_word(struct work_struct *ws)
         }
     }
     word[w] = '\0';
+
+    if (i == max_cnt - 1) {
+        (*log_pos)++;
+    }
 
     /* Write the word string into the kernel log */
     printk(KERN_INFO "bchd: %s\n", word);
