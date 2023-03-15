@@ -1,0 +1,40 @@
+[ 6444.667573] bchd: whispers 
+[ 6445.691680] bchd: Write 
+[ 6445.773670] bchd: MODULE EXIT
+[ 8555.298637] bchd: MODULE INIT -- device major: 247; device minor: 0
+[ 8556.314643] bchd: no text stored in /dev/bchd
+[ 8557.338542] bchd: no text stored in /dev/bchd
+[ 8558.362859] bchd: no text stored in /dev/bchd
+[ 8559.386825] bchd: no text stored in /dev/bchd
+[ 8560.410817] bchd: no text stored in /dev/bchd
+[ 8561.434621] bchd: no text stored in /dev/bchd
+[ 8562.458785] bchd: no text stored in /dev/bchd
+[ 8563.482889] bchd: no text stored in /dev/bchd
+[ 8564.506943] bchd: no text stored in /dev/bchd
+[ 8565.530497] bchd: When 
+[ 8566.554843] bchd: I 
+[ 8567.578759] bchd: find 
+[ 8568.602672] bchd: my 
+[ 8569.626534] bchd: code 
+[ 8570.650829] bchd: in 
+[ 8571.674869] bchd: tons 
+[ 8572.698823] bchd: of 
+[ 8573.722882] bchd: trouble 
+[ 8574.746678] bchd: Friends 
+[ 8575.770469] bchd: and 
+[ 8576.794854] bchd: colleagues 
+[ 8577.818764] bchd: come 
+[ 8578.842812] bchd: to 
+[ 8579.866813] bchd: me 
+[ 8580.890468] bchd: Speaking 
+[ 8581.914903] bchd: words 
+[ 8582.938566] bchd: of 
+[ 8583.962461] bchd: wisdom 
+[ 8584.986560] bchd: Write 
+[ 8586.010599] bchd: in 
+[ 8587.034847] bchd: C 
+[ 8588.058645] bchd:  
+[ 8589.082724] bchd: As 
+[ 8590.106596] bchd: the 
+[ 8591.131133] bchd: deadline 
+[ 8591.315933] bchd: MODULE EXIT
